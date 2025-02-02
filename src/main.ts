@@ -8,6 +8,7 @@ const FETCH_TIMEOUT = 5000;
 const MAX_CONTENT_LENGTH = 3000;
 const NUM_CTX = 4096;
 const TEMPERATURE = 0.3;
+const REQUIRED_LINKS = 10;
 
 async function searchWeb(query: string) {
     const url = new URL(`${SEARXNG_INSTANCE}/search`);
@@ -45,7 +46,7 @@ async function fetchPageContent(url: string): Promise<{ url: string, text: strin
         const embedding = await getEmbedding(processedText);
         return { url, text: processedText, embedding };
     } catch (error) {
-        console.error(`⚠️ Failed to fetch content for ${url}:`, error);
+        console.log(`⏭ Skipping failed link: ${url}`);
         return { url, text: "", embedding: [] };
     }
 }
@@ -58,7 +59,7 @@ function cosineSimilarity(vecA: number[], vecB: number[]): number {
     return dotProduct / (magA * magB);
 }
 
-async function generateAnswer(query: string, sources: Array<{ url: string, text: string, embedding: number[] }>) {
+async function generateWebAnswer(query: string, sources: Array<{ url: string, text: string, embedding: number[] }>) {
     const queryEmbedding = await getEmbedding(query);
     const ranked = sources.map(source => ({
         ...source,
@@ -75,6 +76,21 @@ async function generateAnswer(query: string, sources: Array<{ url: string, text:
 
     Answer (concise, cite sources):`;
 
+    return generateStreamingAnswer(prompt);
+}
+
+async function generateGeneralAnswer(query: string) {
+    const prompt = `
+    [SYSTEM] You are an AI assistant. Answer the following question based on your knowledge.
+
+    Question: ${query}
+
+    Answer (concise):`;
+
+    return generateStreamingAnswer(prompt);
+}
+
+async function generateStreamingAnswer(prompt: string) {
     const response = await fetch(`${OLLAMA_HOST}/api/generate`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -125,36 +141,60 @@ async function generateAnswer(query: string, sources: Array<{ url: string, text:
 }
 
 async function main() {
-    console.log("🚀 SearXNG Semantic Search with Nomic Embeddings");
+    console.log("🚀 Smart Search Assistant (type 'exit' to quit)");
 
     while (true) {
-        const query = prompt("\n🔍 Enter your search query (or type 'exit' to quit): ");
+        const query = prompt("\n🔍 Enter your question: ");
         if (!query || query.toLowerCase() === "exit") break;
 
-        console.log("\n🔄 Searching...");
+        if (!query.toLowerCase().includes("search")) {
+            console.log("\n📝 Generating general answer...");
+            await generateGeneralAnswer(query);
+            continue;
+        }
+
+        console.log("\n🔄 Performing web search...");
         try {
-            const results = await searchWeb(query);
+            const results = await searchWeb(query.replace("search", "").trim());
             console.log(`\n✅ Found ${results.length} results.`);
 
-            const linksToFetch = results.slice(0, 10);
             const sources = [];
-            for (let i = 0; i < linksToFetch.length; i++) {
-                console.log(`\n📡 Fetching link ${i + 1} of ${linksToFetch.length}: ${linksToFetch[i].url}`);
-                const content = await fetchPageContent(linksToFetch[i].url);
-                if (content.text.length > 100) {
-                    sources.push(content);
+            let currentIndex = 0;
+
+            while (sources.length < REQUIRED_LINKS && currentIndex < results.length) {
+                const result = results[currentIndex];
+                console.log(`\n📡 Processing link ${currentIndex + 1} of ${results.length}: ${result.url}`);
+
+                try {
+                    const content = await fetchPageContent(result.url);
+                    if (content.text.length > 100) {
+                        sources.push(content);
+                        console.log(`✓ Added valid source (${sources.length}/${REQUIRED_LINKS})`);
+                    }
+                } catch (error) {
+                    console.log(`⏭ Skipping problematic link: ${result.url}`);
+                }
+
+                currentIndex++;
+
+                // If we've exhausted results but need more links
+                if (currentIndex >= results.length && sources.length < REQUIRED_LINKS) {
+                    console.log("⚠️ Insufficient valid sources found");
+                    break;
                 }
             }
 
             if (sources.length === 0) {
-                console.log("❌ No valid web content found.");
+                console.log("❌ No valid web content found, generating general answer...");
+                await generateGeneralAnswer(query);
             } else {
-                console.log("\n📝 Generating answer...");
-                const answer = await generateAnswer(query, sources);
-                console.log("\n🔍 Final Answer:\n", answer);
+                console.log("\n📝 Generating web-based answer...");
+                await generateWebAnswer(query, sources);
             }
         } catch (error) {
             console.error("❌ Error during search:", error);
+            console.log("\n🔄 Generating general answer instead...");
+            await generateGeneralAnswer(query);
         }
     }
 

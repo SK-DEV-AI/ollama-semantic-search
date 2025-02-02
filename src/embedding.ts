@@ -1,10 +1,9 @@
-const OLLAMA_HOST = "http://localhost:11434";  // Correct Ollama API port
+const OLLAMA_HOST = "http://localhost:11434";
 const EMBEDDING_MODEL = "nomic-embed-text";
 let modelEnsured = false;
 
 async function ensureEmbeddingModelRunning() {
     try {
-        // Check if model is available
         const resp = await fetch(`${OLLAMA_HOST}/api/tags`);
         if (!resp.ok) throw new Error("Ollama not responding");
 
